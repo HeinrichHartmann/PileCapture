@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "OpenCV-Image-Capture"
+version = "0.1.0"
+description = ""
+authors = ["Heinrich Hartmann <heinrich@heinrichhartmann.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+opencv-python = "^4.5.1"
+pandas = "^1.2.3"
+lxml = "^4.6.3"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
