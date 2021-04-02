@@ -196,7 +196,7 @@ def cli(device_type, device_arg, delay):
             rot -= 1
         elif k == ord("c"):  # crop
             crop = not crop
-        elif k == ord("w"):  # wait for keybpress
+        elif k == ord("w"):  # Toggle wait for keypress.
             delay, delay_swap = delay_swap, delay
         elif k == ord("s"):
             file_name_orig = (
