@@ -9,6 +9,8 @@ python = "^3.8"
 opencv-python = "^4.5.1"
 pandas = "^1.2.3"
 lxml = "^4.6.3"
+gphoto2 = "^2.2.4"
+click = "^7.1.2"
 
 [tool.poetry.dev-dependencies]
 

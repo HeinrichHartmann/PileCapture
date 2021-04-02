@@ -1,40 +1,109 @@
+#!/usr/bin/env python
+
 import cv2
+import logging
+import os
+import sys
+from datetime import datetime
+import click
+
+import pandas as pd
 import numpy as np
 from time import sleep
 
-import pandas as pd
-import cv2
+import gphoto2 as gp
+
+logging.basicConfig(level=logging.INFO)
+L = logging.getLogger(__name__)
 
 
-ROT=0
+class CanonCam:
+    def __init__(self):
+        gp.check_result(gp.use_python_logging())
+        camera = gp.check_result(gp.gp_camera_new())
+        gp.check_result(gp.gp_camera_init(camera))
+        L.info(gp.check_result(gp.gp_camera_get_summary(camera)))
+        self.camera = camera
 
-def list_cap():
-    url = "https://en.wikipedia.org/wiki/List_of_common_resolutions"
-    table = pd.read_html(url)[0]
-    table.columns = table.columns.droplevel()
-    cap = cv2.VideoCapture(1)
-    resolutions = {}
-    for index, row in table[["W", "H"]].iterrows():
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, row["W"])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, row["H"])
-        width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-        height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        resolutions[str(width)+"x"+str(height)] = "OK"
-    print(resolutions)
+    def __del__(self):
+        self.camera.exit()
 
-def rectify(h):
-    h = h.reshape((4,2))
-    hnew = np.zeros((4,2),dtype = np.float32)
+    def capture(self):
+        L.info("Canon capture")
+        file_path = self.camera.capture(gp.GP_CAPTURE_IMAGE)
+        target = os.path.join("/tmp", f"{file_path.name}")
+        self.camera.file_get(
+            file_path.folder, file_path.name, gp.GP_FILE_TYPE_NORMAL
+        ).save(target)
+        return cv2.imread(target)
+
+
+class WebCam:
+    @classmethod
+    def list(cls):
+        "Returns a list of valid capture devices"
+        index = 0
+        arr = []
+        while True:
+            cap = cv2.VideoCapture(index)
+            if not cap.read()[0]:
+                break
+            else:
+                arr.append(index)
+                cap.release()
+            index += 1
+        return arr
+
+    def __init__(self, i=0):
+        self.camera = cv2.VideoCapture(i)
+
+    def __del__(self):
+        self.camera.release()
+
+    def capture(self):
+        L.info("Webcam capture")
+        ret, frame = self.camera.read()
+        if not ret:
+            raise Exception("failed to grab frame")
+        return frame
+
+
+class DirCam:
+    def __init__(self, pat):
+        import glob
+
+        pat = pat or "*.png"
+        self.i = glob.iglob(pat)
+
+    def capture(self):
+        p = next(self.i)
+        print(p)
+        return cv2.imread(p)
+
+
+def img_rot(img, n):
+    "rotate image n-times 90-degrees"
+    for i in range(n % 4):
+        img = cv2.transpose(img)
+        img = cv2.flip(img, flipCode=1)
+    return img
+
+
+def box2rect(h):
+    h = h.reshape((4, 2))
+    hnew = np.zeros((4, 2), dtype=np.float32)
     add = h.sum(1)
     hnew[0] = h[np.argmin(add)]
     hnew[2] = h[np.argmax(add)]
-    diff = np.diff(h,axis = 1)
+    diff = np.diff(h, axis=1)
     hnew[1] = h[np.argmin(diff)]
     hnew[3] = h[np.argmax(diff)]
     return hnew
 
+
 # http://www.pyimagesearch.com/2014/08/25/4-point-opencv-getperspective-transform-example/
-def four_point_transform(image, rect):
+def rectify(image, box):
+    rect = box2rect(box)
     # obtain a consistent order of the points and unpack them
     # individually
     (tl, tr, br, bl) = rect
@@ -58,11 +127,10 @@ def four_point_transform(image, rect):
     # (i.e. top-down view) of the image, again specifying points
     # in the top-left, top-right, bottom-right, and bottom-left
     # order
-    dst = np.array([
-        [0, 0],
-        [maxWidth - 1, 0],
-        [maxWidth - 1, maxHeight - 1],
-        [0, maxHeight - 1]], dtype = "float32")
+    dst = np.array(
+        [[0, 0], [maxWidth - 1, 0], [maxWidth - 1, maxHeight - 1], [0, maxHeight - 1]],
+        dtype="float32",
+    )
 
     # compute the perspective transform matrix and then apply it
     M = cv2.getPerspectiveTransform(rect, dst)
@@ -72,95 +140,80 @@ def four_point_transform(image, rect):
     return warped
 
 
-class Scanner(object):
-
-    # https://github.com/vipul-sharma20/document-scanner
-    def detect_edge(self, image, enabled_transform = False):
-        dst = None
-        orig = image.copy()
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (15, 15), 0)
-        edged = cv2.Canny(blurred, 0, 30)
-        contours, _ = cv2.findContours(edged, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-        i = 0
-        for cnt in contours:
-            i += 1
-            if i > 3: break
-            epsilon = 0.051 * cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, epsilon, True)
-            if len(approx) == 4:
-                target = approx
-                cv2.drawContours(image, [target], -1, (0, 255, 0), 2)
-                approx = rectify(target)
-                # dst = self.four_point_transform(orig, approx)
-        return image, dst
-
-def de2(i):
+def docdetect(i):
     o = i.copy()
     i = cv2.cvtColor(i, cv2.COLOR_BGR2GRAY)
     i = cv2.GaussianBlur(i, (17, 17), 0)
     i = cv2.Canny(i, 0, 30)
-    e = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11,11))
+    e = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
     i = cv2.morphologyEx(i, cv2.MORPH_CLOSE, e)
     (contours, _) = cv2.findContours(i, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
-    # o = cv2.cvtColor(i, cv2.COLOR_GRAY2RGB)
     for c in contours:
         cv2.drawContours(o, [c], -1, (0, 255, 0), 2)
+        c = cv2.convexHull(c)
+        cv2.drawContours(o, [c], -1, (255, 0, 0), 2)
         box = cv2.boxPoints(cv2.minAreaRect(c))
         box = np.int0(box)
-        cv2.drawContours(o,[box],0,(0,0,255),2)
+        cv2.drawContours(o, [box], 0, (0, 0, 255), 2)
         return o, box
-        # return four_point_transform(o, rectify(box)), box
+    raise Exception("No box found")
 
 
-def cam():
-    global ROT
-    f = 0
-    cam = cv2.VideoCapture(0)
-    scanner = Scanner()
-    cv2.namedWindow("test")
-    img_counter = 0
+@click.command()
+@click.option("--device_type", default="VideoCapture")
+@click.option("--device_arg", default=None)
+@click.option("--delay", default=1000)
+def cli(device_type, device_arg, delay):
+    if device_type == "VideoCapture":
+        dev = WebCam
+    elif device_type == "Canon":
+        dev = CanonCam
+    elif device_type == "Dir":
+        dev = DirCam
 
+    cam = dev(device_arg)
+    rot = 0
+    crop = False
+    delay_swap = 0
     while True:
-        ret, frame = cam.read()
-        for i in range(ROT):
-            frame = cv2.transpose(frame)
-            frame = cv2.flip(frame,flipCode=1)
-        if not ret:
-            print("failed to grab frame")
+        img = cam.capture()
+        img = img_rot(img, rot)
+        img_orig = img.copy()
+        img, box = docdetect(img)
+        if crop:
+            cv2.imshow("preview", rectify(img, box))
+        else:
+            cv2.imshow("preview", img)
+        cv2.setWindowProperty("preview", cv2.WND_PROP_TOPMOST, 1)
+
+        k = cv2.waitKey(delay) % 256
+        if k in {27, ord("q")}:
             break
-        # image, dst = scanner.detect_edge(frame, True)
-        # cv2.imshow("test", image)
-        preview, box = de2(frame)
-        cv2.imshow("test", preview)
-        image = frame
-        k = cv2.waitKey(33)
-        if k%256 in { 27, ord('q') }:
-            print("Closing")
-            break
-        elif k%256 == ord('s'):
-            img_name = "opencv_frame_{}.png".format(img_counter)
-            rect = rectify(box)
-            out = four_point_transform(frame, rect)
-            cv2.imwrite(img_name, out)
-            print("{} written!".format(img_name))
-            cv2.imshow("test", out)
-            cv2.waitKey(2000)
-            img_counter += 1
-        elif k%256 == ord('r'):
-            ROT += 1
-        elif k%256 == ord('l'):
-            ROT -= 1
-    cam.release()
-
-    cv2.destroyAllWindows()
+        elif k == ord("r"):  # right rotation
+            rot += 1
+        elif k == ord("l"):  # left rotation
+            rot -= 1
+        elif k == ord("c"):  # crop
+            crop = not crop
+        elif k == ord("w"):  # wait for keybpress
+            delay, delay_swap = delay_swap, delay
+        elif k == ord("s"):
+            file_name_orig = (
+                "data/"
+                + datetime.now().isoformat().replace("T", " Image-")
+                + ".orig.png"
+            )
+            file_name_rect = (
+                "data/"
+                + datetime.now().isoformat().replace("T", " Image-")
+                + ".rect.png"
+            )
+            img_rect = rectify(img, box)
+            cv2.imwrite(file_name_orig, img_orig)
+            cv2.imwrite(file_name_rect, img_rect)
+            L.info(f"{file_name_rect} written")
 
 
-def img():
-    img = cv2.imread("./test.png")
-    cv2.imwrite("./out.png", de2(img))
-
-cam()
-# img()
+if __name__ == "__main__":
+    cli()
